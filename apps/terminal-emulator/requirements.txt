@@ -1,0 +1,12 @@
+# PySide6 Terminal Emulator - Python Dependencies
+# LGPL-licensed Qt for Python
+
+PySide6>=6.6.0
+PySide6-WebEngine>=6.6.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+pyinstaller>=6.0.0
+
+# xterm.js WebSocket bridge
+websockets>=12.0
+pywinpty>=2.0.0

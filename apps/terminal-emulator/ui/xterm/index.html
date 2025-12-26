@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Claude Terminal</title>
+  <link rel="stylesheet" href="lib/xterm.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      background: #1e1e2e;
+      overflow: hidden;
+    }
+    #terminal {
+      height: 100%;
+      width: 100%;
+      padding: 8px;
+      padding-right: 22px;
+      overflow: hidden;
+      scrollbar-gutter: stable;
+    }
+    #status {
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: 'Cascadia Code', monospace;
+      font-size: 11px;
+      z-index: 100;
+    }
+    #status.connected { background: #a6e3a1; color: #1e1e2e; }
+    #status.disconnected { background: #f38ba8; color: #1e1e2e; }
+    #status.connecting { background: #f9e2af; color: #1e1e2e; }
+
+    /* Context menu */
+    #context-menu {
+      display: none;
+      position: fixed;
+      background: #313244;
+      border: 1px solid #45475a;
+      border-radius: 6px;
+      padding: 4px 0;
+      min-width: 120px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      z-index: 1000;
+      font-family: 'Cascadia Code', monospace;
+      font-size: 12px;
+    }
+    #context-menu.show { display: block; }
+    .menu-item {
+      padding: 6px 12px;
+      color: #cdd6f4;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .menu-item:hover { background: #45475a; }
+    .menu-item .shortcut { color: #6c7086; font-size: 10px; margin-left: 16px; }
+    .menu-divider { height: 1px; background: #45475a; margin: 4px 0; }
+
+    /* Custom scrollbar styling - Catppuccin theme */
+    /* Main document scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #1e1e2e;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #585b70;
+      border-radius: 4px;
+      transition: background 0.3s ease;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #cba6f7;
+    }
+
+    ::-webkit-scrollbar-corner {
+      background: #1e1e2e;
+    }
+
+    /* xterm.js internal scrollbar */
+    .xterm-viewport {
+      scrollbar-width: thin;
+      scrollbar-color: #585b70 #1e1e2e;
+    }
+
+    .xterm-viewport::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .xterm-viewport::-webkit-scrollbar-track {
+      background: #1e1e2e;
+    }
+
+    .xterm-viewport::-webkit-scrollbar-thumb {
+      background: #585b70;
+      border-radius: 4px;
+      transition: background 0.3s ease;
+    }
+
+    .xterm-viewport::-webkit-scrollbar-thumb:hover {
+      background: #cba6f7;
+    }
+  </style>
+</head>
+<body>
+  <div id="status" class="connecting">Connecting...</div>
+  <div id="terminal"></div>
+
+  <!-- Context Menu -->
+  <div id="context-menu">
+    <div class="menu-item" data-action="copy">Copy <span class="shortcut">Ctrl+C</span></div>
+    <div class="menu-item" data-action="paste">Paste <span class="shortcut">Ctrl+V</span></div>
+    <div class="menu-divider"></div>
+    <div class="menu-item" data-action="clear">Clear Terminal</div>
+    <div class="menu-item" data-action="reset">Reset</div>
+  </div>
+
+  <script src="lib/xterm.min.js"></script>
+  <script src="lib/xterm-addon-fit.min.js"></script>
+  <script src="lib/xterm-addon-webgl.min.js"></script>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script>
+    // QWebChannel bridge to Python (for URL routing)
+    let urlBridge = null;
+    if (typeof QWebChannel !== 'undefined') {
+      new QWebChannel(qt.webChannelTransport, (channel) => {
+        urlBridge = channel.objects.urlBridge;
+        console.log('QWebChannel connected, urlBridge available');
+      });
+    }
+
+    // Catppuccin Mocha theme
+    const theme = {
+      background: '#1e1e2e',
+      foreground: '#cdd6f4',
+      cursor: '#f5e0dc',
+      cursorAccent: '#1e1e2e',
+      selectionBackground: '#585b70',
+      black: '#45475a',
+      red: '#f38ba8',
+      green: '#a6e3a1',
+      yellow: '#f9e2af',
+      blue: '#89b4fa',
+      magenta: '#cba6f7',
+      cyan: '#94e2d5',
+      white: '#bac2de',
+      brightBlack: '#585b70',
+      brightRed: '#f38ba8',
+      brightGreen: '#a6e3a1',
+      brightYellow: '#f9e2af',
+      brightBlue: '#89b4fa',
+      brightMagenta: '#cba6f7',
+      brightCyan: '#94e2d5',
+      brightWhite: '#a6adc8'
+    };
+
+    // Initialize terminal
+    const term = new Terminal({
+      theme: theme,
+      fontFamily: '"Cascadia Code", "Fira Code", monospace',
+      fontSize: 13,
+      lineHeight: 1.2,
+      cursorBlink: true,
+      cursorStyle: 'block',
+      allowProposedApi: true,
+      scrollback: 10000
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+
+    // Try WebGL, fallback to canvas (silently)
+    try {
+      const webglAddon = new WebglAddon.WebglAddon();
+      webglAddon.onContextLoss(() => webglAddon.dispose());
+      term.loadAddon(webglAddon);
+    } catch (e) {
+      // WebGL not available - canvas renderer is fine
+    }
+
+    const terminalEl = document.getElementById('terminal');
+    const statusEl = document.getElementById('status');
+    term.open(terminalEl);
+    fitAddon.fit();
+
+    // WebSocket connection
+    let ws = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 10;
+    const wsPort = new URLSearchParams(window.location.search).get('port') || 8765;
+
+    function updateStatus(state, text) {
+      statusEl.className = state;
+      statusEl.textContent = text;
+    }
+
+    function connect() {
+      updateStatus('connecting', 'Connecting...');
+
+      ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+
+      ws.onopen = () => {
+        updateStatus('connected', 'Connected');
+        reconnectAttempts = 0;
+
+        // Send initial size
+        const dims = { cols: term.cols, rows: term.rows };
+        ws.send(JSON.stringify({ type: 'resize', ...dims }));
+      };
+
+      ws.onmessage = (event) => {
+        const data = event.data;
+        // Quick check: only parse if it looks like JSON (starts with '{')
+        if (data.length < 500 && data[0] === '{') {
+          try {
+            const msg = JSON.parse(data);
+            if (msg.type === 'open_url' && msg.url) {
+              // Route to Python via QWebChannel
+              if (urlBridge) {
+                urlBridge.openUrl(msg.url);
+              } else {
+                window.open(msg.url, '_blank');
+              }
+              return;
+            }
+          } catch (e) {
+            // Not valid JSON, treat as PTY data
+          }
+        }
+        // PTY data - write directly
+        term.write(data);
+      };
+
+      ws.onclose = () => {
+        updateStatus('disconnected', 'Disconnected');
+
+        if (reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++;
+          setTimeout(connect, 1000 * Math.min(reconnectAttempts, 5));
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        ws.close();
+      };
+    }
+
+    // Send input to PTY
+    term.onData((data) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data: data }));
+      }
+    });
+
+    // Handle Ctrl+C / Ctrl+V specially (browser intercepts these)
+    term.attachCustomKeyEventHandler((event) => {
+      // Ctrl+C: Send interrupt signal (unless selecting text for copy)
+      if (event.ctrlKey && event.key === 'c' && event.type === 'keydown') {
+        if (term.hasSelection()) {
+          // Allow browser copy if text is selected
+          document.execCommand('copy');
+          term.clearSelection();
+          return false; // Don't send to PTY
+        } else {
+          // No selection - send SIGINT (Ctrl+C = 0x03)
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+          }
+          return false;
+        }
+      }
+
+      // Ctrl+V: Paste from clipboard
+      if (event.ctrlKey && event.key === 'v' && event.type === 'keydown') {
+        navigator.clipboard.readText().then(text => {
+          if (ws && ws.readyState === WebSocket.OPEN && text) {
+            ws.send(JSON.stringify({ type: 'input', data: text }));
+          }
+        }).catch(() => {});
+        return false;
+      }
+
+      // Ctrl+Shift+C: Always copy
+      if (event.ctrlKey && event.shiftKey && event.key === 'C' && event.type === 'keydown') {
+        document.execCommand('copy');
+        return false;
+      }
+
+      // Ctrl+Shift+V: Always paste
+      if (event.ctrlKey && event.shiftKey && event.key === 'V' && event.type === 'keydown') {
+        navigator.clipboard.readText().then(text => {
+          if (ws && ws.readyState === WebSocket.OPEN && text) {
+            ws.send(JSON.stringify({ type: 'input', data: text }));
+          }
+        }).catch(() => {});
+        return false;
+      }
+
+      // Let xterm handle everything else
+      return true;
+    });
+
+    // Handle resize with debouncing
+    let resizeTimeout = null;
+    let lastCols = 0;
+    let lastRows = 0;
+
+    function handleResize() {
+      // Debounce resize events
+      if (resizeTimeout) clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        fitAddon.fit();
+        // Only send if dimensions actually changed
+        if (ws && ws.readyState === WebSocket.OPEN &&
+            (term.cols !== lastCols || term.rows !== lastRows)) {
+          lastCols = term.cols;
+          lastRows = term.rows;
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
+      }, 100); // 100ms debounce
+    }
+
+    window.addEventListener('resize', handleResize);
+    new ResizeObserver(handleResize).observe(terminalEl);
+
+    // Connect on load
+    connect();
+
+    // Focus terminal
+    term.focus();
+
+    // Expose for Qt bridge if needed
+    window.terminalAPI = {
+      write: (data) => term.write(data),
+      focus: () => term.focus(),
+      clear: () => term.clear(),
+      getSize: () => ({ cols: term.cols, rows: term.rows }),
+      loadUrl: (url) => {
+        // Send URL to parent for right pane loading
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'open_url', url: url }));
+        }
+      }
+    };
+
+    // Context menu handling
+    const contextMenu = document.getElementById('context-menu');
+
+    function showContextMenu(x, y) {
+      contextMenu.style.left = x + 'px';
+      contextMenu.style.top = y + 'px';
+      contextMenu.classList.add('show');
+    }
+
+    function hideContextMenu() {
+      contextMenu.classList.remove('show');
+    }
+
+    // Right-click handler
+    terminalEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showContextMenu(e.clientX, e.clientY);
+    });
+
+    // Hide menu on click outside or escape
+    document.addEventListener('click', (e) => {
+      if (!contextMenu.contains(e.target)) {
+        hideContextMenu();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        hideContextMenu();
+      }
+    });
+
+    // Context menu actions
+    contextMenu.addEventListener('click', async (e) => {
+      const item = e.target.closest('.menu-item');
+      if (!item) return;
+
+      const action = item.dataset.action;
+      hideContextMenu();
+
+      switch (action) {
+        case 'copy':
+          if (term.hasSelection()) {
+            const text = term.getSelection();
+            await navigator.clipboard.writeText(text);
+            term.clearSelection();
+          }
+          break;
+
+        case 'paste':
+          try {
+            const text = await navigator.clipboard.readText();
+            if (ws && ws.readyState === WebSocket.OPEN && text) {
+              ws.send(JSON.stringify({ type: 'input', data: text }));
+            }
+          } catch (err) {
+            console.error('Paste failed:', err);
+          }
+          break;
+
+        case 'clear':
+          term.clear();
+          break;
+
+        case 'reset':
+          term.reset();
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'input', data: '\x0c' })); // Ctrl+L
+          }
+          break;
+      }
+
+      term.focus();
+    });
+  </script>
+</body>
+</html>
