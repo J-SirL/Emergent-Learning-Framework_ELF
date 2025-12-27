@@ -5,11 +5,13 @@ Contains:
 - ensure_hooks_installed: Auto-install ELF hooks on first use
 - ensure_full_setup: Check setup status and handle first-time configuration
 """
+from __future__ import annotations
 
 import sys
 import platform
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 
 def _hook_command_path_exists(command: str, filename: str) -> bool:
@@ -286,7 +288,7 @@ def verify_hooks() -> dict:
     return result
 
 
-def _find_installer(start_path: Path, is_windows: bool) -> Path | None:
+def _find_installer(start_path: Path, is_windows: bool) -> Optional[Path]:
     current = start_path
     # Go up to 4 levels looking for repo root or install base
     for _ in range(4):
