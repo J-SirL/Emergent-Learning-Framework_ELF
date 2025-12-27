@@ -10,6 +10,11 @@ __pycache__/
 .venv/
 venv/
 
+# Python build artifacts
+*.egg-info/
+dist/
+build/
+
 # Private user data - NEVER push to public repo
 memory/
 ceo-inbox/
