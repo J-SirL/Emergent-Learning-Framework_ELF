@@ -405,6 +405,11 @@ settings = {
             {
                 "hooks": [
                     {
+                        # 🔑 KRITISK: QUERY BYGGNADEN FÖRST
+                        "command": f'cd "{elf_dir}" && {python_cmd} -m query.query --context',
+                        "type": "command"
+                    },
+                    {
                         "command": f'{python_cmd} "{pre_hook}"',
                         "type": "command"
                     }

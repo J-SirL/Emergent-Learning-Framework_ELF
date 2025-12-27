@@ -100,7 +100,12 @@ else
     # Auto-install dependencies if node_modules missing (Issue #36)
     if [ ! -d "$FRONTEND_PATH/node_modules" ]; then
         echo "[Installing] Frontend dependencies (node_modules not found)..."
-        cd "$FRONTEND_PATH" && $PKG_MGR install
+        cd "$FRONTEND_PATH"
+        if [ "$PKG_MGR" = "bun" ]; then
+            bun install
+        else
+            npm install --legacy-peer-deps
+        fi
         if [ $? -ne 0 ]; then
             echo "Error: Failed to install frontend dependencies"
             exit 1
@@ -111,6 +116,7 @@ else
     STARTED_SERVERS=true
     sleep 2
 fi
+
 
 # Open browser
 echo "[Opening] Browser..."
