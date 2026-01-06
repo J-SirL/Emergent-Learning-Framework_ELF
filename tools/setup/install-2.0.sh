@@ -688,8 +688,24 @@ install_core_files() {
         if [ -d "$dashboard_src" ]; then
             rm -rf "$ELF_DIR/dashboard-app"
             cp -r "$dashboard_src" "$ELF_DIR/dashboard-app"
-            log_verbose "Installed dashboard"
+            log_verbose "Installed dashboard (including TalkinHead)"
         fi
+    fi
+
+    # Copy head_overlay app (optional avatar overlay)
+    local head_overlay_src="$REPO_ROOT/apps/head_overlay"
+    if [ -d "$head_overlay_src" ]; then
+        rm -rf "$ELF_DIR/head_overlay"
+        cp -r "$head_overlay_src" "$ELF_DIR/head_overlay"
+        log_verbose "Installed head_overlay"
+    fi
+
+    # Copy query migrations
+    local migrations_src="$REPO_ROOT/src/query/migrations"
+    if [ -d "$migrations_src" ]; then
+        mkdir -p "$ELF_DIR/query/migrations"
+        cp "$migrations_src/"*.sql "$ELF_DIR/query/migrations/" 2>/dev/null || true
+        log_verbose "Installed query migrations"
     fi
 
     log_success "Core files installed (user data preserved)"
