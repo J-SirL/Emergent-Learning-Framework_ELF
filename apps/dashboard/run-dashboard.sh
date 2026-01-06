@@ -6,8 +6,13 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ELF_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Detect Python command
-if command -v python3 &> /dev/null; then
+# Use ELF venv Python if available, otherwise detect system Python
+VENV_PYTHON="$ELF_DIR/.venv/bin/python"
+if [ -f "$VENV_PYTHON" ]; then
+    PYTHON_CMD="$VENV_PYTHON"
+elif command -v python3.11 &> /dev/null; then
+    PYTHON_CMD="python3.11"
+elif command -v python3 &> /dev/null; then
     PYTHON_CMD="python3"
 elif command -v python &> /dev/null; then
     PYTHON_CMD="python"

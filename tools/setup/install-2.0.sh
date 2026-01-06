@@ -547,6 +547,19 @@ install_venv() {
         log_warn "Failed to install editable package"
     fi
 
+    # Install dashboard backend dependencies (if dashboard is enabled)
+    if [ "$NO_DASHBOARD" = false ]; then
+        local dashboard_requirements="$REPO_ROOT/apps/dashboard/backend/requirements.txt"
+        if [ -f "$dashboard_requirements" ]; then
+            log_info "Installing dashboard dependencies..."
+            if "$VENV_PYTHON" -m pip install -r "$dashboard_requirements" --quiet 2>&1; then
+                log_verbose "Dashboard dependencies installed"
+            else
+                log_warn "Some dashboard dependencies failed to install"
+            fi
+        fi
+    fi
+
     # Final verification
     if ! "$VENV_PYTHON" -c "import peewee_aio" 2>/dev/null; then
         log_warn "Core dependency peewee_aio not available"
