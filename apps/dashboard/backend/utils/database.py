@@ -112,7 +112,7 @@ def escape_like(s: str) -> str:
 def init_game_tables(conn):
     """Initialize game-related tables if they don't exist."""
     cursor = conn.cursor()
-    
+
     # Users table for OAuth
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
@@ -135,6 +135,14 @@ def init_game_tables(conn):
         FOREIGN KEY (user_id) REFERENCES users (id)
     )
     """)
+
+    # Performance index for leaderboard queries (ORDER BY score DESC)
+    # This index significantly speeds up leaderboard pagination for 1000s of users
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_game_state_score_desc
+    ON game_state (score DESC)
+    """)
+
     conn.commit()
 
 @contextmanager
@@ -149,19 +157,17 @@ def get_db(scope: str = "global"):
     else:
         db_path = GLOBAL_DB_PATH
 
-    # Ensure directory exists
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path), timeout=10.0)
     conn.row_factory = sqlite3.Row
-    
-
-
-    # Initialize game tables on connection (lightweight check)
-    init_game_tables(conn)
 
     try:
+        init_game_tables(conn)
         yield conn
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

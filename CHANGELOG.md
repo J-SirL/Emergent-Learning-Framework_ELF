@@ -5,6 +5,38 @@ All notable changes to the Emergent Learning Framework will be documented in thi
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.14] - 2026-01-06
+
+### Added
+- **install-2.0.sh** - New installation script with Python 3.11+ enforcement
+  - Data protection: Won't overwrite memory/, failure-analysis/, ceo-inbox/
+  - `--python PATH` flag for custom Python executable
+  - `--verbose` flag for detailed output
+  - Colored output and better error messages
+- **Merged v0.3.12 features** - Incorporated upstream improvements:
+  - Game Leaderboard system with anti-cheat filtering
+  - Comprehensive API documentation (`docs/api/`)
+  - Database schema documentation (`docs/database/`)
+  - Developer guides for testing, performance, extensions
+  - Query system migrations (`src/query/migrations/`)
+  - TalkinHead hooks and overlay
+
+### Fixed
+- **Python 3.11+ Requirement** - Changed from >=3.8 to >=3.11 (code uses 3.10+ syntax)
+- **Type Hint Compatibility** - Fixed `Path | None` to `Optional[Path]` in setup.py
+- **npm peer dependencies** - Added `--legacy-peer-deps` to dashboard npm install
+- **Query Building Hook** - Added automatic building query in PreToolUse hooks
+
+### Security
+- **SQL Injection Protection** - Whitelist-based validation in main.py (from v0.3.12)
+- **Path Traversal Protection** - Hardened admin.py file access (from v0.3.12)
+- **Thread-Safe Session Index** - Added threading.RLock protection (from v0.3.11)
+- **Exponential Backoff** - Auto-capture error handling (from v0.3.11)
+
+### Changed
+- Version bumped to 0.3.14
+- pyproject.toml updated with test markers and filterwarnings
+
 ## [0.3.1] - 2025-12-25
 
 ### Fixed

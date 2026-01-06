@@ -9,6 +9,7 @@ __pycache__/
 # Python virtual environment
 .venv/
 venv/
+**/rembg_env/
 
 # Python build artifacts
 *.egg-info/

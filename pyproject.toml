@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "emergent-learning-framework"
-version = "0.1.0"
+version = "0.3.14"
 description = "Emergent Learning Framework - Institutional knowledge for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -46,6 +46,17 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "concurrent: marks tests with threading/async",
+    "database: marks tests requiring database",
+    "integration: marks integration tests",
+    "stress: marks stress/load tests",
+]
 
 [tool.mypy]
 # Mypy configuration will be in mypy.ini for better organization

@@ -43,8 +43,21 @@ class CheckinOrchestrator:
 +------------------------------------+
 """
 
-    def __init__(self):
-        """Initialize the checkin orchestrator."""
+    def __init__(self, interactive: bool = None):
+        """
+        Initialize the checkin orchestrator.
+
+        Args:
+            interactive: Force interactive mode on/off. If None, auto-detect.
+                         When False, skips input() prompts and outputs JSON hints
+                         for Claude to ask questions via AskUserQuestion tool.
+        """
+        # Auto-detect interactive mode if not specified
+        if interactive is None:
+            self.interactive = sys.stdin.isatty()
+        else:
+            self.interactive = interactive
+
         # Find ELF home using elf_paths if available
         self.elf_home = self._resolve_elf_home()
         self.state_file = Path.home() / '.claude' / '.elf_checkin_state'
@@ -122,7 +135,7 @@ class CheckinOrchestrator:
         try:
             # Call query.py --context to get the data
             result = subprocess.run(
-                [sys.executable, str(self.elf_home / 'query' / 'query.py'), '--context'],
+                [sys.executable, str(self.elf_home / 'src' / 'query' / 'query.py'), '--context'],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -158,6 +171,11 @@ class CheckinOrchestrator:
         if not self.is_first_checkin:
             return False  # Don't ask again
 
+        if not self.interactive:
+            # Non-interactive: Output JSON hint for Claude to use AskUserQuestion
+            print('[PROMPT_NEEDED] {"type": "dashboard", "question": "Start ELF Dashboard?", "default": "yes"}')
+            return False  # Claude will handle this
+
         print("")
         print("[+] Start ELF Dashboard?")
         print("   The dashboard provides metrics, model routing, and system health.")
@@ -176,6 +194,11 @@ class CheckinOrchestrator:
         """
         if not self.is_first_checkin:
             return self.selected_model  # Use environment or default
+
+        if not self.interactive:
+            # Non-interactive: Output JSON hint for Claude to use AskUserQuestion
+            print('[PROMPT_NEEDED] {"type": "model", "question": "Select AI model", "options": ["claude", "gemini", "codex", "skip"]}')
+            return self.selected_model  # Claude will handle this
 
         print("")
         print("[=] Select Your Active Model")
@@ -210,16 +233,30 @@ class CheckinOrchestrator:
             return self.selected_model
 
     def start_dashboard(self):
-        """Start the dashboard if requested."""
+        """Start the dashboard in a visible terminal window that user can close."""
         try:
-            dashboard_script = self.elf_home / 'dashboard-app' / 'run-dashboard.sh'
-            if dashboard_script.exists():
-                subprocess.Popen(
-                    ['bash', str(dashboard_script)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                print("   [OK] Dashboard launching in background")
+            # Check for both .bat and .ps1 versions
+            dashboard_bat = self.elf_home / 'apps' / 'dashboard' / 'run-dashboard.bat'
+            dashboard_ps1 = self.elf_home / 'apps' / 'dashboard' / 'run-dashboard.ps1'
+            dashboard_sh = self.elf_home / 'apps' / 'dashboard' / 'run-dashboard.sh'
+
+            if sys.platform == 'win32':
+                # Launch PowerShell with -Command to avoid file association issues
+                if dashboard_ps1.exists():
+                    # Use & operator to invoke script as command, not "open" it
+                    cmd = f'& "{dashboard_ps1}"'
+                    subprocess.Popen(
+                        ['powershell', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', cmd],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE
+                    )
+                else:
+                    print(f"   [!] Dashboard script not found")
+                    return
+                print("   [OK] Dashboard launching (close the terminal window to stop)")
+            elif dashboard_sh.exists():
+                # Unix: launch in new terminal if possible
+                subprocess.Popen(['bash', str(dashboard_sh)])
+                print("   [OK] Dashboard launching")
             else:
                 print(f"   [!] Dashboard script not found")
         except Exception as e:
@@ -280,8 +317,14 @@ class CheckinOrchestrator:
 
 def main():
     """Main entry point."""
+    import argparse
+    parser = argparse.ArgumentParser(description="ELF Checkin Workflow")
+    parser.add_argument('--non-interactive', '-n', action='store_true',
+                       help="Run in non-interactive mode (output prompts as JSON hints)")
+    args = parser.parse_args()
+
     try:
-        orchestrator = CheckinOrchestrator()
+        orchestrator = CheckinOrchestrator(interactive=not args.non_interactive)
         orchestrator.run()
         sys.exit(0)
     except KeyboardInterrupt:

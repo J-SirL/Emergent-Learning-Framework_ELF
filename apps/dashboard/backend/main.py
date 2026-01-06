@@ -27,8 +27,11 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env.local (development) or .env (production)
+from pathlib import Path
+env_local = Path(__file__).parent / ".env.local"
+env_file = env_local if env_local.exists() else Path(__file__).parent / ".env"
+load_dotenv(env_file)
 
 # Path import helpers
 def _import_get_base_path() -> Optional[callable]:
@@ -101,6 +104,7 @@ from routers import (
     game_router,
     setup_router,
 )
+from routers.auth import init_redis
 
 # Configure logging
 logging.basicConfig(
@@ -192,6 +196,31 @@ app.add_middleware(
 # Security Headers Middleware
 # ==============================================================================
 
+# ==============================================================================
+# Request Size Limit Middleware
+# ==============================================================================
+
+class LimitUploadSize(BaseHTTPMiddleware):
+    """Limit request body size to prevent DoS"""
+
+    def __init__(self, app, max_upload_size: int = 10 * 1024 * 1024):
+        super().__init__(app)
+        self.max_upload_size = max_upload_size
+
+    async def dispatch(self, request, call_next):
+        if request.method in ["POST", "PUT", "PATCH"]:
+            if "content-length" in request.headers:
+                content_length = int(request.headers["content-length"])
+                if content_length > self.max_upload_size:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        {"error": "Request body too large"},
+                        status_code=413
+                    )
+        response = await call_next(request)
+        return response
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to all HTTP responses."""
 
@@ -215,6 +244,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         return response
 
+
+app.add_middleware(LimitUploadSize, max_upload_size=10 * 1024 * 1024)
 
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -262,8 +293,136 @@ app.include_router(setup_router)
 
 
 # ==============================================================================
+# SQL Query Whitelist (Defense-in-Depth for SQL Injection Prevention)
+# ==============================================================================
+
+ALLOWED_TABLE_CONFIGS = {
+    'metrics': {
+        'columns': frozenset(['id', 'metric_type', 'metric_name', 'metric_value', 'timestamp']),
+        'order_by': frozenset(['timestamp', 'id', 'metric_type']),
+    },
+    'trails': {
+        'columns': frozenset(['id', 'location', 'scent', 'strength', 'agent_id', 'message', 'created_at']),
+        'order_by': frozenset(['created_at', 'id', 'strength']),
+    },
+    'workflow_runs': {
+        'columns': frozenset(['id', 'workflow_name', 'status', 'phase', 'created_at']),
+        'order_by': frozenset(['created_at', 'id']),
+    },
+    'heuristics': {
+        'columns': frozenset(['id', 'domain', 'rule', 'confidence', 'is_golden', 'updated_at', 'created_at']),
+        'order_by': frozenset(['updated_at', 'created_at', 'confidence', 'id']),
+    },
+    'learnings': {
+        'columns': frozenset(['id', 'type', 'title', 'summary', 'domain', 'created_at']),
+        'order_by': frozenset(['created_at', 'id']),
+    },
+    'decisions': {
+        'columns': frozenset(['id', 'title', 'status', 'domain', 'created_at']),
+        'order_by': frozenset(['created_at', 'id', 'status']),
+    },
+    'invariants': {
+        'columns': frozenset(['id', 'statement', 'status', 'severity', 'domain', 'violation_count', 'created_at']),
+        'order_by': frozenset(['created_at', 'id', 'violation_count', 'severity']),
+    },
+}
+
+MAX_QUERY_LIMIT = 1000
+
+
+def _validate_query_params(table: str, columns: str, order_by: str, limit: int) -> tuple:
+    """
+    Validate query parameters against whitelist to prevent SQL injection.
+
+    Returns validated (table, columns, order_by, limit) tuple.
+    Raises ValueError if validation fails.
+    """
+    if table not in ALLOWED_TABLE_CONFIGS:
+        logger.warning(f"SQL injection blocked: invalid table '{table}'")
+        raise ValueError(f"Invalid table: {table}")
+
+    config = ALLOWED_TABLE_CONFIGS[table]
+
+    col_list = [c.strip() for c in columns.split(',')]
+    for col in col_list:
+        if not col or not col.replace('_', '').isalnum():
+            logger.warning(f"SQL injection blocked: invalid column format '{col}'")
+            raise ValueError(f"Invalid column format: {col}")
+        if col not in config['columns']:
+            logger.warning(f"SQL injection blocked: column '{col}' not allowed for {table}")
+            raise ValueError(f"Column '{col}' not allowed for table '{table}'")
+
+    order_by = order_by.strip()
+    if not order_by.replace('_', '').isalnum():
+        logger.warning(f"SQL injection blocked: invalid order_by format '{order_by}'")
+        raise ValueError(f"Invalid order_by format: {order_by}")
+    if order_by not in config['order_by']:
+        logger.warning(f"SQL injection blocked: order_by '{order_by}' not allowed for {table}")
+        raise ValueError(f"Order by '{order_by}' not allowed for table '{table}'")
+
+    if not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"Limit must be positive integer, got {limit}")
+    limit = min(limit, MAX_QUERY_LIMIT)
+
+    return table, columns, order_by, limit
+
+
+# ==============================================================================
 # Background Task: Monitor for Changes
 # ==============================================================================
+
+def _get_db_change_counts():
+    """Synchronous DB operations for monitor_changes (runs in dedicated thread)."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT COUNT(*) FROM metrics")
+        metrics_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM trails")
+        trail_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM workflow_runs")
+        run_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM heuristics")
+        heuristics_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM learnings")
+        learnings_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM decisions")
+        decisions_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM invariants")
+        invariants_count = cursor.fetchone()[0]
+
+        return {
+            'metrics': metrics_count,
+            'trails': trail_count,
+            'runs': run_count,
+            'heuristics': heuristics_count,
+            'learnings': learnings_count,
+            'decisions': decisions_count,
+            'invariants': invariants_count,
+        }
+
+
+def _get_recent_data(table: str, columns: str, order_by: str, limit: int = 5):
+    """
+    Fetch recent data from a table with SQL injection protection.
+
+    All parameters are validated against whitelist before query execution.
+    Runs in dedicated thread via asyncio.to_thread().
+    """
+    table, columns, order_by, limit = _validate_query_params(table, columns, order_by, limit)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        query = f"SELECT {columns} FROM {table} ORDER BY {order_by} DESC LIMIT ?"
+        cursor.execute(query, (limit,))
+        return [dict_from_row(r) for r in cursor.fetchall()]
+
 
 async def monitor_changes():
     """Monitor database for changes and broadcast updates."""
@@ -278,114 +437,72 @@ async def monitor_changes():
 
     while True:
         try:
-            with get_db() as conn:
-                cursor = conn.cursor()
+            # Wrap blocking DB operations in thread to prevent blocking event loop
+            counts = await asyncio.to_thread(_get_db_change_counts)
 
-                # Check for new metrics
-                cursor.execute("SELECT COUNT(*) FROM metrics")
-                metrics_count = cursor.fetchone()[0]
+            metrics_count = counts['metrics']
+            trail_count = counts['trails']
+            run_count = counts['runs']
+            heuristics_count = counts['heuristics']
+            learnings_count = counts['learnings']
+            decisions_count = counts['decisions']
+            invariants_count = counts['invariants']
 
-                cursor.execute("SELECT COUNT(*) FROM trails")
-                trail_count = cursor.fetchone()[0]
+            # Broadcast if changes detected
+            if metrics_count > last_metrics_count:
+                recent = await asyncio.to_thread(
+                    _get_recent_data, "metrics", "metric_type, metric_name, metric_value, timestamp", "timestamp"
+                )
+                await manager.broadcast_update("metrics", {"recent": recent})
+                last_metrics_count = metrics_count
 
-                cursor.execute("SELECT COUNT(*) FROM workflow_runs")
-                run_count = cursor.fetchone()[0]
+            if trail_count > last_trail_count:
+                recent = await asyncio.to_thread(
+                    _get_recent_data, "trails", "location, scent, strength, agent_id, message, created_at", "created_at"
+                )
+                await manager.broadcast_update("trails", {"recent": recent})
+                last_trail_count = trail_count
 
-                cursor.execute("SELECT COUNT(*) FROM heuristics")
-                heuristics_count = cursor.fetchone()[0]
+            if run_count > last_run_count:
+                recent = await asyncio.to_thread(
+                    _get_recent_data, "workflow_runs", "id, workflow_name, status, phase, created_at", "created_at", 1
+                )
+                await manager.broadcast_update("runs", {"latest": recent[0] if recent else None})
+                last_run_count = run_count
 
-                cursor.execute("SELECT COUNT(*) FROM learnings")
-                learnings_count = cursor.fetchone()[0]
+            if heuristics_count > last_heuristics_count:
+                recent = await asyncio.to_thread(
+                    _get_recent_data, "heuristics", "id, domain, rule, confidence, is_golden, updated_at", "updated_at"
+                )
+                await manager.broadcast_update("heuristics", {"recent": recent})
+                last_heuristics_count = heuristics_count
 
-                cursor.execute("SELECT COUNT(*) FROM decisions")
-                decisions_count = cursor.fetchone()[0]
+            if learnings_count > last_learnings_count:
+                recent = await asyncio.to_thread(
+                    _get_recent_data, "learnings", "id, type, title, summary, domain, created_at", "created_at"
+                )
+                await manager.broadcast_update("learnings", {"recent": recent})
+                last_learnings_count = learnings_count
 
-                cursor.execute("SELECT COUNT(*) FROM invariants")
-                invariants_count = cursor.fetchone()[0]
+            if decisions_count > last_decisions_count:
+                recent = await asyncio.to_thread(
+                    _get_recent_data, "decisions", "id, title, status, domain, created_at", "created_at"
+                )
+                await manager.broadcast_update("decisions", {"recent": recent})
+                last_decisions_count = decisions_count
 
-                # Broadcast if changes detected
-                if metrics_count > last_metrics_count:
-                    cursor.execute("""
-                        SELECT metric_type, metric_name, metric_value, timestamp
-                        FROM metrics
-                        ORDER BY timestamp DESC
-                        LIMIT 5
-                    """)
-                    recent = [dict_from_row(r) for r in cursor.fetchall()]
-                    await manager.broadcast_update("metrics", {"recent": recent})
-                    last_metrics_count = metrics_count
-
-                if trail_count > last_trail_count:
-                    cursor.execute("""
-                        SELECT location, scent, strength, agent_id, message, created_at
-                        FROM trails
-                        ORDER BY created_at DESC
-                        LIMIT 5
-                    """)
-                    recent = [dict_from_row(r) for r in cursor.fetchall()]
-                    await manager.broadcast_update("trails", {"recent": recent})
-                    last_trail_count = trail_count
-
-                if run_count > last_run_count:
-                    cursor.execute("""
-                        SELECT id, workflow_name, status, phase, created_at
-                        FROM workflow_runs
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                    """)
-                    recent = dict_from_row(cursor.fetchone())
-                    await manager.broadcast_update("runs", {"latest": recent})
-                    last_run_count = run_count
-
-                if heuristics_count > last_heuristics_count:
-                    cursor.execute("""
-                        SELECT id, domain, rule, confidence, is_golden, updated_at
-                        FROM heuristics
-                        ORDER BY updated_at DESC
-                        LIMIT 5
-                    """)
-                    recent = [dict_from_row(r) for r in cursor.fetchall()]
-                    await manager.broadcast_update("heuristics", {"recent": recent})
-                    last_heuristics_count = heuristics_count
-
-                if learnings_count > last_learnings_count:
-                    cursor.execute("""
-                        SELECT id, type, title, summary, domain, created_at
-                        FROM learnings
-                        ORDER BY created_at DESC
-                        LIMIT 5
-                    """)
-                    recent = [dict_from_row(r) for r in cursor.fetchall()]
-                    await manager.broadcast_update("learnings", {"recent": recent})
-                    last_learnings_count = learnings_count
-
-                if decisions_count > last_decisions_count:
-                    cursor.execute("""
-                        SELECT id, title, status, domain, created_at
-                        FROM decisions
-                        ORDER BY created_at DESC
-                        LIMIT 5
-                    """)
-                    recent = [dict_from_row(r) for r in cursor.fetchall()]
-                    await manager.broadcast_update("decisions", {"recent": recent})
-                    last_decisions_count = decisions_count
-
-                if invariants_count > last_invariants_count:
-                    cursor.execute("""
-                        SELECT id, statement, status, severity, domain, violation_count, created_at
-                        FROM invariants
-                        ORDER BY created_at DESC
-                        LIMIT 5
-                    """)
-                    recent = [dict_from_row(r) for r in cursor.fetchall()]
-                    await manager.broadcast_update("invariants", {"recent": recent})
-                    last_invariants_count = invariants_count
+            if invariants_count > last_invariants_count:
+                recent = await asyncio.to_thread(
+                    _get_recent_data, "invariants", "id, statement, status, severity, domain, violation_count, created_at", "created_at"
+                )
+                await manager.broadcast_update("invariants", {"recent": recent})
+                last_invariants_count = invariants_count
 
             # Rescan session index every 5 minutes
             current_time = datetime.now()
             if last_session_scan is None or (current_time - last_session_scan).total_seconds() > 300:
                 try:
-                    session_count = session_index.scan()
+                    session_count = await asyncio.to_thread(session_index.scan)
                     logger.info(f"Session index refreshed: {session_count} sessions")
                     last_session_scan = current_time
                 except Exception as e:
@@ -405,6 +522,9 @@ async def startup_event():
         logger.info(f"Project context detected: {ctx.project_name} at {ctx.project_root}")
     else:
         logger.info("No project context - using global scope only")
+
+    # Initialize async Redis for session storage
+    await init_redis()
 
     # Initialize Peewee database and create tables
     # MUST happen before monitor_changes() tries to query metrics table
@@ -471,7 +591,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
-        manager.disconnect(websocket)
+        await manager.disconnect(websocket)
 
 
 # ==============================================================================
