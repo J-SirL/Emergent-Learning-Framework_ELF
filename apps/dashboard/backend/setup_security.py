@@ -50,9 +50,7 @@ def setup_env():
             print("Setup cancelled. Using existing .env file.")
             return
     
-    print("
-Generating security credentials...
-")
+    print("\nGenerating security credentials...\n")
     
     encryption_key = generate_encryption_key()
     dev_token = generate_access_token()
@@ -87,11 +85,9 @@ ENVIRONMENT=development
     env_file.write_text(env_content)
     os.chmod(env_file, 0o600)
     
-    print(f"
-[SUCCESS] Created .env file at {env_file}")
+    print(f"\n[SUCCESS] Created .env file at {env_file}")
     print(f"[INFO] Permissions: 0600 - readable only by owner")
-    print(f"
-[IMPORTANT] Never commit .env to git or share these credentials!")
+    print(f"\n[IMPORTANT] Never commit .env to git or share these credentials!")
 
 
 if __name__ == "__main__":
