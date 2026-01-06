@@ -16,6 +16,11 @@ venv/
 dist/
 build/
 
+# Node.js
+node_modules/
+.vite/
+*.tsbuildinfo
+
 # Private user data - NEVER push to public repo
 memory/
 ceo-inbox/
