@@ -20,3 +20,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Secrets (added 2026-10-11)
+.env
+.env.*
+!.env.example
