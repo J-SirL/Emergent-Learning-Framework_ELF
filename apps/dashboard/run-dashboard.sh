@@ -6,13 +6,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ELF_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Use ELF venv Python if available, otherwise detect system Python
-VENV_PYTHON="$ELF_DIR/.venv/bin/python"
-if [ -f "$VENV_PYTHON" ]; then
-    PYTHON_CMD="$VENV_PYTHON"
-elif command -v python3.11 &> /dev/null; then
-    PYTHON_CMD="python3.11"
-elif command -v python3 &> /dev/null; then
+# Detect Python command
+if command -v python3 &> /dev/null; then
     PYTHON_CMD="python3"
 elif command -v python &> /dev/null; then
     PYTHON_CMD="python"
@@ -20,6 +15,38 @@ else
     echo "Error: Python not found. Install from https://python.org"
     exit 1
 fi
+
+# Function to setup Python virtual environment for backend
+# Required on Linux (PEP 668) and recommended on macOS with Homebrew
+setup_backend_venv() {
+    local VENV_PATH="$BACKEND_PATH/venv"
+    local REQUIREMENTS="$BACKEND_PATH/requirements.txt"
+
+    # Check if venv exists
+    if [ ! -d "$VENV_PATH" ]; then
+        echo "[Setup] Creating Python virtual environment..."
+        $PYTHON_CMD -m venv "$VENV_PATH"
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to create virtual environment"
+            echo "Try: sudo apt install python3-venv (Ubuntu/Debian)"
+            return 1
+        fi
+    fi
+
+    # Check if dependencies are installed (look for uvicorn)
+    if ! "$VENV_PATH/bin/python" -c "import uvicorn" 2>/dev/null; then
+        echo "[Setup] Installing backend dependencies..."
+        "$VENV_PATH/bin/pip" install -q -r "$REQUIREMENTS"
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to install backend dependencies"
+            return 1
+        fi
+    fi
+
+    # Return the venv python path
+    echo "$VENV_PATH/bin/python"
+    return 0
+}
 
 # Issue #11: Detect Git Bash + npm platform mismatch on Windows
 if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "mingw"* ]] || [[ -n "$MSYSTEM" ]]; then
@@ -69,8 +96,15 @@ STARTED_SERVERS=false
 if curl -s "http://localhost:$BACKEND_PORT/api/stats" >/dev/null 2>&1; then
     echo "[OK] Backend already running on port $BACKEND_PORT"
 else
+    # Setup venv and get python path (handles PEP 668 on Linux/macOS)
+    VENV_PYTHON=$(setup_backend_venv)
+    if [ $? -ne 0 ]; then
+        echo "Error: Backend setup failed"
+        exit 1
+    fi
+
     echo "[Starting] Backend API server..."
-    cd "$BACKEND_PATH" && $PYTHON_CMD -m uvicorn main:app --host 0.0.0.0 --port $BACKEND_PORT &
+    cd "$BACKEND_PATH" && "$VENV_PYTHON" -m uvicorn main:app --host 0.0.0.0 --port $BACKEND_PORT &
     STARTED_SERVERS=true
 
     # Wait for backend to be ready (polls until healthy, max 60s)
@@ -105,12 +139,7 @@ else
     # Auto-install dependencies if node_modules missing (Issue #36)
     if [ ! -d "$FRONTEND_PATH/node_modules" ]; then
         echo "[Installing] Frontend dependencies (node_modules not found)..."
-        cd "$FRONTEND_PATH"
-        if [ "$PKG_MGR" = "bun" ]; then
-            bun install
-        else
-            npm install --legacy-peer-deps
-        fi
+        cd "$FRONTEND_PATH" && $PKG_MGR install
         if [ $? -ne 0 ]; then
             echo "Error: Failed to install frontend dependencies"
             exit 1
@@ -122,6 +151,55 @@ else
     sleep 2
 fi
 
+# Start TalkinHead overlay (cross-platform)
+TALKINHEAD_PATH="$SCRIPT_DIR/TalkinHead"
+TALKINHEAD_LOCK="$HOME/.elf-talkinhead.lock"
+
+# Check if TalkinHead already running via lockfile
+TALKINHEAD_RUNNING=false
+if [ -f "$TALKINHEAD_LOCK" ]; then
+    TALKINHEAD_PID=$(cat "$TALKINHEAD_LOCK" 2>/dev/null)
+    if [ -n "$TALKINHEAD_PID" ]; then
+        if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "mingw"* ]] || [[ -n "$MSYSTEM" ]]; then
+            # Windows: use tasklist
+            if tasklist //FI "PID eq $TALKINHEAD_PID" 2>/dev/null | grep -q "$TALKINHEAD_PID"; then
+                TALKINHEAD_RUNNING=true
+            fi
+        else
+            # Linux/macOS: use kill -0
+            if kill -0 "$TALKINHEAD_PID" 2>/dev/null; then
+                TALKINHEAD_RUNNING=true
+            fi
+        fi
+    fi
+fi
+
+if [ "$TALKINHEAD_RUNNING" = false ]; then
+    if [ -f "$TALKINHEAD_PATH/main.py" ]; then
+        echo "[Starting] TalkinHead overlay..."
+        # Write dashboard PID file for orphan detection
+        echo $$ > ~/.elf-dashboard.pid
+        if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "mingw"* ]] || [[ -n "$MSYSTEM" ]]; then
+            # Windows: use pythonw for no console (check for PyQt5 first)
+            if $PYTHON_CMD -c "import PyQt5" 2>/dev/null; then
+                cd "$TALKINHEAD_PATH" && pythonw main.py &
+            else
+                echo "[Skip] TalkinHead (PyQt5 not installed - run: pip install PyQt5)"
+            fi
+        else
+            # Linux/macOS: use venv launcher (handles numpy/Qt compatibility)
+            if [ -f "$TALKINHEAD_PATH/run-talkinhead.sh" ]; then
+                "$TALKINHEAD_PATH/run-talkinhead.sh" &
+            else
+                # Fallback to direct python if no launcher script
+                cd "$TALKINHEAD_PATH" && $PYTHON_CMD main.py &
+            fi
+        fi
+        STARTED_SERVERS=true
+    fi
+else
+    echo "[OK] TalkinHead already running (PID $TALKINHEAD_PID)"
+fi
 
 # Open browser
 echo "[Opening] Browser..."

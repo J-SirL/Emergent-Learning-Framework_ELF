@@ -12,6 +12,7 @@ Each router handles a specific domain of the API:
 - fraud: Fraud reports and review
 - workflows: Workflow management
 - context: Project context and scope information
+- semantic: Semantic memory store/recall/migrate (Ollama embeddings)
 """
 
 from .analytics import router as analytics_router
@@ -27,6 +28,8 @@ from .context import router as context_router
 from .auth import router as auth_router
 from .game import router as game_router
 from .setup import router as setup_router
+from .live import router as live_router
+from .semantic import router as semantic_router
 
 __all__ = [
     'analytics_router',
@@ -42,4 +45,6 @@ __all__ = [
     'auth_router',
     'game_router',
     'setup_router',
+    'live_router',
+    'semantic_router',
 ]

@@ -264,10 +264,10 @@ class AutoCapture:
                 try:
                     cursor.execute(
                         """
-                        INSERT INTO learnings (type, filepath, title, summary, domain, severity, created_at)
-                        VALUES ('failure', ?, ?, ?, 'workflow', 3, ?)
+                        INSERT INTO learnings (type, filepath, title, summary, domain, severity, created_at, updated_at)
+                        VALUES ('failure', ?, ?, ?, 'workflow', 3, ?, ?)
                         """,
-                        (f"workflow_runs/{run_id}", title, summary, created_at),
+                        (f"workflow_runs/{run_id}", title, summary, created_at, created_at),
                     )
                     captured += 1
                 except Exception as e:
@@ -340,10 +340,10 @@ class AutoCapture:
                 try:
                     cursor.execute(
                         """
-                        INSERT INTO learnings (type, filepath, title, summary, domain, severity, created_at)
-                        VALUES ('success', ?, ?, ?, 'workflow', 1, ?)
+                        INSERT INTO learnings (type, filepath, title, summary, domain, severity, created_at, updated_at)
+                        VALUES ('success', ?, ?, ?, 'workflow', 1, ?, ?)
                         """,
-                        (f"workflow_runs/{run_id}", title, summary, created_at),
+                        (f"workflow_runs/{run_id}", title, summary, created_at, created_at),
                     )
                     captured += 1
                 except Exception as e:

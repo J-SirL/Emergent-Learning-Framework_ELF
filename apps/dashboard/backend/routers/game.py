@@ -4,9 +4,16 @@ from fastapi import APIRouter, HTTPException, Depends, Request, Body, Query
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from utils.database import get_db, dict_from_row
-from routers.auth import get_user_id, SESSIONS
+from routers.auth import get_user_id, get_session
 
 router = APIRouter(prefix="/api/game", tags=["game"])
+
+
+# =============================================================================
+# Global Leaderboard Configuration
+# =============================================================================
+
+GLOBAL_LEADERBOARD_API = "https://elf-oauth.elf0auth.workers.dev/leaderboard/sync"
 
 
 # =============================================================================
@@ -283,31 +290,38 @@ async def get_game_state(request: Request):
     """Get authoritative game state for current user."""
     user_id = await get_user_id(request)
     if not user_id:
-        # Return default Guest state
         return {
             "score": 0,
             "level": 1,
             "active_weapon": "pulse_laser",
             "unlocked_weapons": ["pulse_laser"],
-            "unlocked_cursors": ["default"]
+            "unlocked_cursors": ["default"],
+            "talkinhead_unlocked": False,
+            "talkinhead_autolaunch": False
         }
 
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM game_state WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
-        
+
         if not row:
-            # Initialize if missing
-            return { "score": 0, "unlocked_weapons": ["pulse_laser"] }
-            
+            return {
+                "score": 0,
+                "unlocked_weapons": ["pulse_laser"],
+                "talkinhead_unlocked": False,
+                "talkinhead_autolaunch": False
+            }
+
         data = dict_from_row(row)
         return {
             "score": data["score"],
-            "level": 1, # Logic for levels can be added later
+            "level": 1,
             "active_weapon": data["active_weapon"],
             "unlocked_weapons": json.loads(data["unlocked_weapons"]),
-            "unlocked_cursors": json.loads(data["unlocked_cursors"])
+            "unlocked_cursors": json.loads(data["unlocked_cursors"]),
+            "talkinhead_unlocked": bool(data.get("talkinhead_unlocked", 0)),
+            "talkinhead_autolaunch": bool(data.get("talkinhead_autolaunch", 0))
         }
 
 @router.post("/sync")
@@ -320,18 +334,76 @@ async def sync_score(request: Request, payload: Dict[str, Any] = Body(...)):
     # Basic Anti-Cheat: Rate limiting / Delta checks could go here.
     # For now, we trust the client's score addition but log it.
     score_delta = payload.get("score_delta", 0)
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT score FROM game_state WHERE user_id = ?", (user_id,))
         current_score = cursor.fetchone()["score"]
-        
+
         new_score = current_score + score_delta
-        
+
         cursor.execute("UPDATE game_state SET score = ? WHERE user_id = ?", (new_score, user_id))
         conn.commit()
-        
+
+    # Sync to global leaderboard (non-blocking)
+    try:
+        token = request.cookies.get("session_token")
+        if token:
+            session = await get_session(token)
+            if session and session.access_token:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        GLOBAL_LEADERBOARD_API,
+                        json={"score": new_score},
+                        headers={"Authorization": f"Bearer {session.access_token}"},
+                        timeout=5.0
+                    )
+    except Exception:
+        pass
+
     return {"success": True, "new_score": new_score}
+
+@router.post("/sync-global")
+async def sync_to_global(request: Request):
+    """Manually sync current score to global leaderboard."""
+    user_id = await get_user_id(request)
+    if not user_id:
+        return {"success": False, "message": "Login required"}
+
+    # Get current score from local DB
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT score FROM game_state WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return {"success": False, "message": "No game state found"}
+        current_score = row["score"]
+
+    # Sync to global leaderboard
+    try:
+        token = request.cookies.get("session_token")
+        if not token:
+            return {"success": False, "message": "Session expired"}
+
+        session = await get_session(token)
+        if not session or not session.access_token:
+            return {"success": False, "message": "Session expired"}
+
+        async with httpx.AsyncClient() as client:
+            res = await client.post(
+                GLOBAL_LEADERBOARD_API,
+                json={"score": current_score},
+                headers={"Authorization": f"Bearer {session.access_token}"},
+                timeout=5.0
+            )
+            if res.status_code == 200:
+                data = res.json()
+                return {"success": True, "rank": data.get("rank"), "score": current_score}
+            else:
+                return {"success": False, "message": "Global sync failed"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
 
 @router.post("/equip")
 async def equip_item(request: Request, payload: Dict[str, str] = Body(...)):
@@ -373,61 +445,98 @@ async def verify_star(request: Request):
     username = user_row["username"]
     
     token = request.cookies.get("session_token")
-    if not token or token not in SESSIONS:
-         raise HTTPException(status_code=401, detail="Session expired")
-         
-    access_token = SESSIONS[token].get("access_token")
-    
-    # In a real app we'd use the stored OAuth Access Token for private checks.
+    if not token:
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    session = await get_session(token)
+    if not session or not session.access_token:
+        raise HTTPException(status_code=401, detail="Session expired or missing token")
+
     async with httpx.AsyncClient() as client:
-        # Check if AUTHENTICATED user starred it
-        # GET /user/starred/{owner}/{repo}
         url = "https://api.github.com/user/starred/Spacehunterz/Emergent-Learning-Framework_ELF"
-        
         headers = {
-            "Authorization": f"token {access_token}",
+            "Authorization": f"token {session.access_token}",
             "Accept": "application/vnd.github+json"
         }
-        
-        # MOCK FOR DEV
-        if access_token == "mock_token":
-             res_status = 204
-        else:
-             res = await client.get(url, headers=headers)
-             res_status = res.status_code
+        res = await client.get(url, headers=headers)
+        res_status = res.status_code
 
     if res_status == 204:
-        # 3. UNLOCK REWARD
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT unlocked_weapons, unlocked_cursors FROM game_state WHERE user_id = ?", (user_id,))
+            cursor.execute("SELECT unlocked_weapons, unlocked_cursors, talkinhead_unlocked FROM game_state WHERE user_id = ?", (user_id,))
             row = dict_from_row(cursor.fetchone())
-            
+
             weapons = json.loads(row["unlocked_weapons"])
             cursors = json.loads(row["unlocked_cursors"])
-            
+            talkinhead_was_locked = not row.get("talkinhead_unlocked", 0)
+
             unlocked_any = False
             if "star_blaster" not in weapons:
                 weapons.append("star_blaster")
                 unlocked_any = True
 
-            # Unlock star_ship cursor and star_trail
             if "star_ship" not in cursors:
                 cursors.append("star_ship")
                 unlocked_any = True
             if "star_trail" not in cursors:
                 cursors.append("star_trail")
                 unlocked_any = True
-            
+
+            if talkinhead_was_locked:
+                unlocked_any = True
+
             if unlocked_any:
                 cursor.execute("""
-                    UPDATE game_state 
-                    SET unlocked_weapons = ?, unlocked_cursors = ?
+                    UPDATE game_state
+                    SET unlocked_weapons = ?, unlocked_cursors = ?, talkinhead_unlocked = 1
                     WHERE user_id = ?
                 """, (json.dumps(weapons), json.dumps(cursors), user_id))
                 conn.commit()
-                return {"success": True, "message": "Star confirmed! Rewards unlocked!"}
+                return {
+                    "success": True,
+                    "message": "Star confirmed! Rewards unlocked!",
+                    "unlocked": ["star_blaster", "star_ship", "star_trail", "talkinhead"]
+                }
             else:
-                 return {"success": True, "message": "Already unlocked.", "already_unlocked": True}
+                return {"success": True, "message": "Already unlocked.", "already_unlocked": True}
 
     return {"success": False, "message": "Repo not starred. Please star to unlock!"}
+
+
+class TalkinHeadSettings(BaseModel):
+    """Settings for TalkinHead feature."""
+    autolaunch: bool = Field(..., description="Whether to auto-launch TalkinHead with dashboard")
+
+
+@router.post("/talkinhead-settings")
+async def update_talkinhead_settings(request: Request, settings: TalkinHeadSettings):
+    """
+    Update TalkinHead settings.
+    Requires TalkinHead to be unlocked (via starring the repo).
+    """
+    user_id = await get_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Check if TalkinHead is unlocked
+        cursor.execute("SELECT talkinhead_unlocked FROM game_state WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="No game state found")
+
+        if not row["talkinhead_unlocked"]:
+            raise HTTPException(status_code=403, detail="TalkinHead not unlocked. Star the repo first!")
+
+        # Update autolaunch setting
+        cursor.execute(
+            "UPDATE game_state SET talkinhead_autolaunch = ? WHERE user_id = ?",
+            (1 if settings.autolaunch else 0, user_id)
+        )
+        conn.commit()
+
+    return {"success": True, "autolaunch": settings.autolaunch}

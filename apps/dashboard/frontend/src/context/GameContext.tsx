@@ -21,6 +21,8 @@ interface GameState {
     viewMode: 'static' | 'cockpit';
     isGameOver: boolean;
     lastHitTime: number;
+    talkinheadUnlocked: boolean;
+    talkinheadAutolaunch: boolean;
 }
 
 interface GameContextType extends GameState {
@@ -46,6 +48,7 @@ interface GameContextType extends GameState {
     restartGame: () => void;
     lastHitTime: number;
     triggerPlayerHit: () => void;
+    setTalkinheadAutolaunch: (enabled: boolean) => Promise<void>;
 }
 
 const GameContext = createContext<GameContextType | undefined>(undefined);
@@ -64,7 +67,9 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         shields: 100,
         viewMode: (localStorage.getItem('gameState_viewMode') as 'static' | 'cockpit') || 'cockpit',
         isGameOver: false,
-        lastHitTime: 0
+        lastHitTime: 0,
+        talkinheadUnlocked: false,
+        talkinheadAutolaunch: false
     }));
 
     // Fetch initial state from backend
@@ -86,7 +91,15 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     level: gameData.level || 1,
 
                     unlockedCursors: gameData.unlocked_cursors || ['default'],
+                    talkinheadUnlocked: gameData.talkinhead_unlocked || false,
+                    talkinheadAutolaunch: gameData.talkinhead_autolaunch || false,
                 }));
+
+                // 3. Sync to global leaderboard (non-blocking)
+                fetch('http://localhost:8888/api/game/sync-global', {
+                    method: 'POST',
+                    credentials: 'include'
+                }).catch(() => {/* Ignore errors - global sync is best-effort */});
             }
         } catch (err) {
             console.error("Failed to sync game state:", err);
@@ -199,6 +212,25 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         shields: maxShields
     }));
 
+    const setTalkinheadAutolaunch = async (enabled: boolean) => {
+        try {
+            const res = await fetch('http://localhost:8888/api/game/talkinhead-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ autolaunch: enabled })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setState(prev => ({ ...prev, talkinheadAutolaunch: enabled }));
+            } else {
+                console.error('Failed to update TalkinHead settings:', data.message);
+            }
+        } catch (err) {
+            console.error('Failed to update TalkinHead settings:', err);
+        }
+    };
+
     // Update damage logic to trigger Game Over instead of disabling game
     const damageShields = (amount: number) => setState(prev => {
         const newShields = Math.max(0, prev.shields - amount);
@@ -235,7 +267,8 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
             restartGame,
             lastHitTime: state.lastHitTime,
             triggerPlayerHit: () => setState(prev => ({ ...prev, lastHitTime: Date.now() })),
-            shields: state.shields
+            shields: state.shields,
+            setTalkinheadAutolaunch
         }}>
             {children}
         </GameContext.Provider>

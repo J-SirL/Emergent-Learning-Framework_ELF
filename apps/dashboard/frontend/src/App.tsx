@@ -8,8 +8,6 @@ import {
   StatsBar,
   HotspotVisualization,
   HeuristicPanel,
-  TimelineView,
-  RunsPanel,
   QueryInterface,
   AlertsPanel,
   KnowledgeGraph,
@@ -20,6 +18,8 @@ import {
   InvariantsPanel,
   FraudReviewPanel
 } from './components'
+import { LivePanel } from './components/live'
+import { CosmicTimelineView, CosmicRunsView } from './components/cosmic-view'
 import {
   TimelineEvent,
 } from './types'
@@ -66,7 +66,7 @@ class ErrorBoundary extends React.Component<
 }
 
 function AppContent() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'heuristics' | 'runs' | 'timeline' | 'query' | 'analytics' | 'graph' | 'sessions' | 'assumptions' | 'spikes' | 'invariants' | 'fraud'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'heuristics' | 'runs' | 'timeline' | 'query' | 'analytics' | 'graph' | 'sessions' | 'assumptions' | 'spikes' | 'invariants' | 'fraud' | 'live'>('overview')
   const [selectedDomain, setSelectedDomain] = useState<string | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
@@ -235,6 +235,21 @@ function AppContent() {
   const { performanceMode } = useCosmicSettings()
   const { setParticleCount } = useTheme()
 
+  // Handle domain selection from GridView - navigate to heuristics tab
+  const handleDomainSelectFromGrid = (domain: string | null) => {
+    setSelectedDomain(domain)
+    if (domain) {
+      // When selecting a domain from grid, navigate to heuristics tab
+      setActiveTab('heuristics')
+    }
+  }
+
+  // Handle domain selection from SolarSystem - just set domain, don't navigate (let planet zoom work)
+  const handleDomainSelectFromSpace = (domain: string | null) => {
+    setSelectedDomain(domain)
+    // Don't navigate - let the planet detail popup show
+  }
+
   // Performance Mode Logic
   useEffect(() => {
     switch (performanceMode) {
@@ -293,6 +308,7 @@ function AppContent() {
     { id: 'spikes', label: 'View Spike Reports', category: 'Navigation', action: () => setActiveTab('spikes') },
     { id: 'invariants', label: 'View Invariants', category: 'Navigation', action: () => setActiveTab('invariants') },
     { id: 'fraud', label: 'Review Fraud Reports', category: 'Navigation', action: () => setActiveTab('fraud') },
+    { id: 'live', label: 'View Live Agents', category: 'Navigation', action: () => setActiveTab('live') },
     { id: 'query', label: 'Query the Building', shortcut: '⌘Q', category: 'Actions', action: () => setActiveTab('query') },
     { id: 'refresh', label: 'Refresh Data', shortcut: '⌘R', category: 'Actions', action: () => { loadStats(); reloadHeuristics() } },
     { id: 'clearDomain', label: 'Clear Domain Filter', category: 'Actions', action: () => setSelectedDomain(null) },
@@ -316,7 +332,8 @@ function AppContent() {
         commandPaletteOpen={commandPaletteOpen}
         setCommandPaletteOpen={setCommandPaletteOpen}
         commands={commands}
-        onDomainSelect={setSelectedDomain}
+        onDomainSelectFromGrid={handleDomainSelectFromGrid}
+        onDomainSelectFromSpace={handleDomainSelectFromSpace}
         selectedDomain={selectedDomain}
       >
         {/* Intro Layer */}
@@ -331,7 +348,13 @@ function AppContent() {
 
         <div className="space-y-6">
           {/* Stats Bar */}
-          <StatsBar stats={statsForBar} />
+          <StatsBar
+            stats={statsForBar}
+            onNavigate={(tab, domain) => {
+              setActiveTab(tab as any)
+              if (domain) setSelectedDomain(domain)
+            }}
+          />
 
           {/* Tab Content */}
           {activeTab === 'overview' && (
@@ -369,13 +392,13 @@ function AppContent() {
           {activeTab === 'graph' && (
             <KnowledgeGraph
               onNodeClick={(node) => {
-                setSelectedDomain(node.domain)
+                handleDomainSelectFromGrid(node.domain)
               }}
             />
           )}
 
           {activeTab === 'runs' && (
-            <RunsPanel
+            <CosmicRunsView
               runs={runs.map(r => ({
                 id: String(r.id),
                 agent_type: r.workflow_name || 'unknown',
@@ -386,9 +409,8 @@ function AppContent() {
                 duration_ms: r.completed_at && r.started_at
                   ? new Date(r.completed_at).getTime() - new Date(r.started_at).getTime()
                   : null,
-                heuristics_used: [],
                 files_touched: [],
-                outcome_reason: r.failed_nodes > 0 ? `${r.failed_nodes} nodes failed` : null,
+                error_message: r.failed_nodes > 0 ? `${r.failed_nodes} nodes failed` : undefined,
               }))}
               onRetry={handleRetryRun}
               onOpenInEditor={handleOpenInEditor}
@@ -396,13 +418,14 @@ function AppContent() {
           )}
 
           {activeTab === 'sessions' && <SessionHistoryPanel />}
+          {activeTab === 'live' && <LivePanel />}
           {activeTab === 'assumptions' && <AssumptionsPanel />}
           {activeTab === 'spikes' && <SpikeReportsPanel />}
           {activeTab === 'invariants' && <InvariantsPanel />}
           {activeTab === 'fraud' && <FraudReviewPanel />}
 
           {activeTab === 'timeline' && (
-            <TimelineView
+            <CosmicTimelineView
               events={events.map((e, idx) => {
                 const validEventTypes = ['task_start', 'task_end', 'heuristic_consulted', 'heuristic_validated', 'heuristic_violated', 'failure_recorded', 'golden_promoted'] as const
                 const rawType = e.event_type || e.type || 'task_start'
